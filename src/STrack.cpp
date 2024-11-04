@@ -2,7 +2,7 @@
 
 #include <cstddef>
 
-byte_track::STrack::STrack(const Rect<float>& rect, const float& score) :
+byte_track::STrack::STrack(const Rect<float>& rect, const float& score, const int& label) :
     kalman_filter_(),
     mean_(),
     covariance_(),
@@ -13,7 +13,8 @@ byte_track::STrack::STrack(const Rect<float>& rect, const float& score) :
     track_id_(0),
     frame_id_(0),
     start_frame_id_(0),
-    tracklet_len_(0)
+    tracklet_len_(0),
+    label_(label)
 {
 }
 
@@ -60,6 +61,11 @@ const size_t& byte_track::STrack::getTrackletLength() const
     return tracklet_len_;
 }
 
+const int& byte_track::STrack::getLabel() const
+{
+    return label_;
+}
+
 void byte_track::STrack::activate(const size_t& frame_id, const size_t& track_id)
 {
     kalman_filter_.initiate(mean_, covariance_, rect_.getXyah());
@@ -92,6 +98,7 @@ void byte_track::STrack::reActivate(const STrack &new_track, const size_t &frame
     }
     frame_id_ = frame_id;
     tracklet_len_ = 0;
+    label_ = new_track.getLabel();
 }
 
 void byte_track::STrack::predict()
@@ -114,6 +121,7 @@ void byte_track::STrack::update(const STrack &new_track, const size_t &frame_id)
     score_ = new_track.getScore();
     frame_id_ = frame_id;
     tracklet_len_++;
+    label_ = new_track.getLabel();
 }
 
 void byte_track::STrack::markAsLost()
