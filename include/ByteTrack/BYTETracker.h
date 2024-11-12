@@ -17,11 +17,11 @@ class BYTETracker
 public:
     using STrackPtr = std::shared_ptr<STrack>;
 
-    BYTETracker(const int& frame_rate = 30,
-                const int& track_buffer = 30,
+    BYTETracker(const int& max_time_lost = 30,
                 const float& track_thresh = 0.5,
                 const float& high_thresh = 0.6,
-                const float& match_thresh = 0.8);
+                const float& match_thresh = 0.8, 
+                bool trace = false);
     ~BYTETracker();
 
     std::vector<STrackPtr> update(const std::vector<Object>& objects);
@@ -71,5 +71,7 @@ private:
     std::vector<STrackPtr> tracked_stracks_;
     std::vector<STrackPtr> lost_stracks_;
     std::vector<STrackPtr> removed_stracks_;
+
+    bool _trace;
 };
 }

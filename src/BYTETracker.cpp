@@ -8,17 +8,20 @@
 #include <utility>
 #include <vector>
 
-byte_track::BYTETracker::BYTETracker(const int& frame_rate,
-                                     const int& track_buffer,
+#include <iostream>
+
+byte_track::BYTETracker::BYTETracker(const int& max_time_lost,
                                      const float& track_thresh,
                                      const float& high_thresh,
-                                     const float& match_thresh) :
+                                     const float& match_thresh,
+                                     bool trace) :
     track_thresh_(track_thresh),
     high_thresh_(high_thresh),
     match_thresh_(match_thresh),
-    max_time_lost_(static_cast<size_t>(frame_rate / 30.0 * track_buffer)),
+    max_time_lost_(max_time_lost),
     frame_id_(0),
-    track_id_count_(0)
+    track_id_count_(0),
+    _trace(trace)
 {
 }
 
@@ -35,16 +38,31 @@ std::vector<byte_track::BYTETracker::STrackPtr> byte_track::BYTETracker::update(
     std::vector<STrackPtr> det_stracks;
     std::vector<STrackPtr> det_low_stracks;
 
+    if (_trace) {
+        std::cout << " -------------------- ByteTrack trace ---------------------" << std::endl;
+        std::cout << " ---------- Step 1: Get detections ----------" << std::endl;
+    }
+    int th=0;
+    int tl=0;
+
     for (const auto &object : objects)
     {
         const auto strack = std::make_shared<STrack>(object.rect, object.prob, object.label);
         if (object.prob >= track_thresh_)
         {
             det_stracks.push_back(strack);
+
+            if (_trace) {
+                std::cout << "frame=" << frame_id_ << ": H, "<< " ID=" << th++ << " [ " << strack->getRect().x() << " , " << strack->getRect().y() << " , " << strack->getRect().width() << " , " << strack->getRect().height() << " ]" << " score=" << strack->getScore() << std::endl;
+            }
         }
         else
         {
             det_low_stracks.push_back(strack);
+
+            if (_trace) {
+                std::cout << "frame=" << frame_id_ << ": L, "<< " ID=" << tl++ << " [ " << strack->getRect().x() << " , " << strack->getRect().y() << " , " << strack->getRect().width() << " , " << strack->getRect().height() << " ]" << " score=" << strack->getScore() << std::endl;
+            }
         }
     }
 
@@ -73,6 +91,17 @@ std::vector<byte_track::BYTETracker::STrackPtr> byte_track::BYTETracker::update(
         strack->predict();
     }
 
+    if (_trace) {
+        std::cout << " --- Active stracks ---" << std::endl;
+        for (auto &strack : active_stracks){
+            std::cout << "frame=" << frame_id_<< ": ID=" << strack->getTrackId() << " [ " << strack->getRect().x() << " , " << strack->getRect().y() << " , " << strack->getRect().width() << " , " << strack->getRect().height() << " ]" << std::endl;
+        }
+        std::cout << " --- Lost stracks ---" << std::endl;
+        for (auto &strack : lost_stracks_){
+            std::cout << "frame=" << frame_id_<< ": ID=" << strack->getTrackId() << " [ " << strack->getRect().x() << " , " << strack->getRect().y() << " , " << strack->getRect().width() << " , " << strack->getRect().height() << " ]" << std::endl;
+        }
+    }
+
     ////////////////// Step 2: First association, with IoU //////////////////
     std::vector<STrackPtr> current_tracked_stracks;
     std::vector<STrackPtr> remain_tracked_stracks;
@@ -84,8 +113,29 @@ std::vector<byte_track::BYTETracker::STrackPtr> byte_track::BYTETracker::update(
         std::vector<int> unmatch_detection_idx, unmatch_track_idx;
 
         const auto dists = calcIouDistance(strack_pool, det_stracks);
+
+        if (_trace) {
+            std::cout << " ---------- Step 2: First association, with IoU ---------- " << std::endl;
+            std::cout << " ---  IoU distances < 1 ( [det]=iou ) ---" << std::endl;
+            
+            for(uint i=0;i<dists.size();i++){
+                std::cout << "frame=" << frame_id_<< ": strack=" << strack_pool[i]->getTrackId() << " => " ;
+		        for(uint j=0;j<dists[i].size();j++) {
+                    if (dists[i][j] < 1) {
+                        std::cout << " [" << j << "]=" << dists[i][j] << "," ;
+                    }    
+                } 
+                std::cout << std::endl;
+            }
+        }
+
         linearAssignment(dists, strack_pool.size(), det_stracks.size(), match_thresh_,
                          matches_idx, unmatch_track_idx, unmatch_detection_idx);
+
+        if (_trace) {
+            std::cout << " ---  IoU assignments with High detections (IoU < match_thresh="<< match_thresh_ << ") ---" << std::endl;
+        }
+        int ic = 0;
 
         for (const auto &match_idx : matches_idx)
         {
@@ -95,29 +145,80 @@ std::vector<byte_track::BYTETracker::STrackPtr> byte_track::BYTETracker::update(
             {
                 track->update(*det, frame_id_);
                 current_tracked_stracks.push_back(track);
+
+                if (_trace) {
+                    if ( ic == 0) {
+                        std::cout << "frame=" << frame_id_ << ": ";
+                    }
+                    ic++;
+                    std::cout << ", [T-" << track->getTrackId() << "]=" << match_idx[1] << "" ;
+                }
+                
             }
             else
             {
                 track->reActivate(*det, frame_id_);
                 refind_stracks.push_back(track);
+
+                if (_trace) {
+                    ic++;
+                    std::cout << ", [R-" << track->getTrackId() << "]=" << match_idx[1] << "" ;
+                }
             }
+
+            if (_trace && ic>=8) {
+                ic=0;
+                std::cout << std::endl;
+            }
+
+        }
+
+        if (_trace) {
+            std::cout << std::endl;
+            std::cout << " ---  Unmatched detections ---" << std::endl;
+            std::cout << "frame=" << frame_id_ << ": ";
         }
 
         for (const auto &unmatch_idx : unmatch_detection_idx)
         {
             remain_det_stracks.push_back(det_stracks[unmatch_idx]);
+
+            if (_trace) {
+                std::cout << ", " << unmatch_idx ;
+            }
+        }
+
+        if (_trace) {
+            std::cout << std::endl;
+            std::cout << " ---  Unmatched tracks ---" << std::endl;
+            std::cout << "frame=" << frame_id_ << ": ";
         }
 
         for (const auto &unmatch_idx : unmatch_track_idx)
         {
+            if (_trace) {
+                std::cout << ", " << strack_pool[unmatch_idx]->getTrackId() ;
+            }
+
             if (strack_pool[unmatch_idx]->getSTrackState() == STrackState::Tracked)
             {
                 remain_tracked_stracks.push_back(strack_pool[unmatch_idx]);
+
+                if (_trace) {
+                    std::cout << "-RT" ;
+                }
             }
+        }
+
+        if (_trace) {
+            std::cout << std::endl;
         }
     }
 
     ////////////////// Step 3: Second association, using low score dets //////////////////
+    if (_trace) {
+        std::cout << " ---------- Step 3: Second association, using low score dets ----------" << std::endl;
+    }
     std::vector<STrackPtr> current_lost_stracks;
 
     {
@@ -125,8 +226,30 @@ std::vector<byte_track::BYTETracker::STrackPtr> byte_track::BYTETracker::update(
         std::vector<int> unmatch_track_idx, unmatch_detection_idx;
 
         const auto dists = calcIouDistance(remain_tracked_stracks, det_low_stracks);
+
+        if (_trace) {
+            std::cout << " ---  IoU distances < 1 ( [det]=iou ) ---" << std::endl;
+            
+            for(uint i=0;i<dists.size();i++){
+                std::cout << "frame=" << frame_id_<< ": strack=" << remain_tracked_stracks[i]->getTrackId() << " => " ;
+		        for(uint j=0;j<dists[i].size();j++) {
+                    // std::cout << " [" << det_stracks[j]->getTrackId() << " , " << dists[i][j] << "]," ;
+                    if (dists[i][j] < 1) {
+                        std::cout << " [" << j << "]=" << dists[i][j] << "," ;
+                    }
+                    
+                } 
+                std::cout << std::endl;
+            }
+        }
+
         linearAssignment(dists, remain_tracked_stracks.size(), det_low_stracks.size(), 0.5,
                          matches_idx, unmatch_track_idx, unmatch_detection_idx);
+
+        if (_trace) {
+            std::cout << " ---  IoU assignments with Low detections (IoU < 0.5) ---" << std::endl;
+            std::cout << "frame=" << frame_id_ << ": ";
+        }                 
 
         for (const auto &match_idx : matches_idx)
         {
@@ -136,12 +259,26 @@ std::vector<byte_track::BYTETracker::STrackPtr> byte_track::BYTETracker::update(
             {
                 track->update(*det, frame_id_);
                 current_tracked_stracks.push_back(track);
+
+                if (_trace) {
+                    std::cout << ", [T-" << track->getTrackId() << "]=" << match_idx[1] << "" ;
+                }
             }
             else
             {
                 track->reActivate(*det, frame_id_);
                 refind_stracks.push_back(track);
+
+                if (_trace) {
+                    std::cout << ", [R-" << track->getTrackId() << "]=" << match_idx[1] << "" ;
+                }
             }
+        }
+
+        if (_trace) {
+            std::cout << std::endl;
+            std::cout << " ---  Unmatched new lost tracks ---" << std::endl;
+            std::cout << "frame=" << frame_id_ << ": ";
         }
 
         for (const auto &unmatch_track : unmatch_track_idx)
@@ -151,11 +288,23 @@ std::vector<byte_track::BYTETracker::STrackPtr> byte_track::BYTETracker::update(
             {
                 track->markAsLost();
                 current_lost_stracks.push_back(track);
+
+                if (_trace) {
+                    std::cout << ", " << track->getTrackId() ;
+                }
             }
+        }
+
+        if (_trace) {
+            std::cout << std::endl;
         }
     }
 
     ////////////////// Step 4: Init new stracks //////////////////
+    if (_trace) {
+        std::cout << " ---------- Step 4: Init new stracks ---------- " << std::endl;
+    }
+
     std::vector<STrackPtr> current_removed_stracks;
 
     {
@@ -181,6 +330,10 @@ std::vector<byte_track::BYTETracker::STrackPtr> byte_track::BYTETracker::update(
             current_removed_stracks.push_back(track);
         }
 
+        if (_trace) {
+            std::cout << " ---  New tracks (score >= high_thresh="<< high_thresh_ << ") ---" << std::endl;
+            std::cout << "frame=" << frame_id_ << ": ";
+        }
         // Add new stracks
         for (const auto &unmatch_idx : unmatch_detection_idx)
         {
@@ -192,22 +345,47 @@ std::vector<byte_track::BYTETracker::STrackPtr> byte_track::BYTETracker::update(
             track_id_count_++;
             track->activate(frame_id_, track_id_count_);
             current_tracked_stracks.push_back(track);
+
+            if (_trace) {
+                std::cout << ", " << track->getTrackId() ;
+            }
+        }
+
+        if (_trace) {
+            std::cout << std::endl ;
         }
     }
 
     ////////////////// Step 5: Update state //////////////////
+    if (_trace) {
+        std::cout << " ---------- Step 5: Update state ---------- " << std::endl;
+        std::cout << " ---  Killed tracks (lost_strack->getFrameId() > max_time_lost=" << max_time_lost_ << ") ---" << std::endl;
+        std::cout << "frame=" << frame_id_ << ": ";
+    }
+
     for (const auto &lost_strack : lost_stracks_)
     {
         if (frame_id_ - lost_strack->getFrameId() > max_time_lost_)
         {
             lost_strack->markAsRemoved();
             current_removed_stracks.push_back(lost_strack);
+
+            if (_trace) {
+                std::cout << ", " << lost_strack->getTrackId() ;
+            }
         }
+    }
+
+    if (_trace) {
+        std::cout << std::endl ;
     }
 
     tracked_stracks_ = jointStracks(current_tracked_stracks, refind_stracks);
     lost_stracks_ = subStracks(jointStracks(subStracks(lost_stracks_, tracked_stracks_), current_lost_stracks), removed_stracks_);
     removed_stracks_ = jointStracks(removed_stracks_, current_removed_stracks);
+
+    // delete removed_stracks_ elements to avoid memory leak
+    removed_stracks_.clear(); // as these are shared pointers, this should be sufficient 
 
     std::vector<STrackPtr> tracked_stracks_out, lost_stracks_out;
     removeDuplicateStracks(tracked_stracks_, lost_stracks_, tracked_stracks_out, lost_stracks_out);
@@ -221,6 +399,10 @@ std::vector<byte_track::BYTETracker::STrackPtr> byte_track::BYTETracker::update(
         {
             output_stracks.push_back(track);
         }
+    }
+
+    if (_trace) {
+        std::cout << " -------------------- END of ByteTrack trace ---------------------" << std::endl;
     }
 
     return output_stracks;
